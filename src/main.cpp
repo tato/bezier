@@ -67,7 +67,7 @@ struct Point
     double select_radius;
     bool selected;
 
-    Point(double x, double y): x(x), y(y), select_radius(8), selected(true) {}
+    Point(double x, double y): x(x), y(y), select_radius(4), selected(true) {}
 };
 
 struct World
@@ -88,6 +88,23 @@ static bool intersect_point(const Point& point, double x, double y)
     double d = sqrt(dx*dx + dy*dy);
     bool selected = d <= point.select_radius;
     return selected;
+}
+
+static pair<double, double> bezier_step(double t)
+{
+    int n = WORLD.points.size()-1;
+    double bx = 0;
+    double by = 0;
+    int i = 0;
+    for (const auto& [id, point]: WORLD.points)
+    {
+        double v = binomial(n, i) * pow(1 - t, n - i) * pow(t, i);
+        bx += v * point.x;
+        by += v * point.y;
+
+        i += 1;
+    }
+    return {bx, by};
 }
 
 static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
@@ -189,23 +206,18 @@ int main(void)
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
 
-        glColor3f(0, 0, 0);
-        int n = WORLD.points.size()-1;
+        vector<pair<double, double>> curve_points;
         for (double t = 0; t < 1.0; t += 0.01)
         {
-            double bx = 0;
-            double by = 0;
-            int i = 0;
-            for (const auto& [id, point]: WORLD.points)
-            {
-                double v = binomial(n, i) * pow(1 - t, n - i) * pow(t, i);
-                bx += v * point.x;
-                by += v * point.y;
-
-                i += 1;
-            }
-            gl::draw_circle(bx, by, 2);
+            auto [x, y] = bezier_step(t);
+            curve_points.emplace_back(x, y);
         }
+        {
+            auto [x, y] = bezier_step(1.0);
+            curve_points.emplace_back(x, y);
+        }
+        glColor3f(0, 0, 0);
+        gl::draw_line(curve_points, 1);
 
         for (const auto& [id, point]: WORLD.points)
         {
