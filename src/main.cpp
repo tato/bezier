@@ -1,21 +1,29 @@
+#include <unordered_map>
+#include <utility>
 #include <vector>
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <GLFW/glfw3.h>
 
 using namespace std;
 
-#include <moremath.h>
+#include <stb_easy_font.h>
 
-namespace render
+#define TAU 6.283185307179586
+
+double binomial(double n, double k)
+{
+    double denom = tgamma(k + 1) * tgamma(n - k + 1);
+    return tgamma(n + 1) / denom;
+}
+
+
+namespace gl
 {
     void draw_circle(double px, double py, double radius)
     {
-        union {
-            struct { int x, y, width, height; };
-            int v[4];
-        } viewport;
-        glGetIntegerv(GL_VIEWPORT, viewport.v);
-
         glBegin(GL_TRIANGLE_FAN);
         static const int MAX_STEPS = 16;
         for (int step = 0; step < MAX_STEPS; step++)
@@ -23,7 +31,31 @@ namespace render
             double angle = step * TAU / MAX_STEPS;
             double x = px + cos(angle) * radius;
             double y = py + sin(angle) * radius;
-            glVertex2f(2 * x / viewport.width - 1, -2 * y / viewport.height + 1);
+            glVertex2f(x, y);
+        }
+        glEnd();
+    }
+
+    void draw_line(vector<pair<double, double>> points, double radius)
+    {
+        glLineWidth(radius);
+        glDisable(GL_LINE_SMOOTH);
+        glBegin(GL_LINE_STRIP);
+        for (const auto& [x, y]: points)
+        {
+            glVertex2f(x, y);
+        }
+        glEnd();
+    }
+
+    void draw_quads(float *vertex_buffer, int quad_num)
+    {
+        glBegin(GL_QUADS);
+        for (int i = 0; i < quad_num*4; i++)
+        {
+            float x = vertex_buffer[i*4];
+            float y = vertex_buffer[i*4 + 1];
+            glVertex2f(x, y);
         }
         glEnd();
     }
@@ -40,15 +72,16 @@ struct Point
 
 struct World
 {
-    vector<Point> points;
+    unordered_map<int, Point> points;
     int dragging_point;
+    double dragging_distance_traveled;
 
-    World(): points(), dragging_point(-1) {}
+    World(): points(), dragging_point(-1), dragging_distance_traveled(0) {}
 };
 
 static World WORLD;
 
-static bool intersect_point(Point& point, double x, double y)
+static bool intersect_point(const Point& point, double x, double y)
 {
     double dx = x - point.x;
     double dy = y - point.y;
@@ -62,7 +95,13 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
     if (WORLD.dragging_point >= 0
             && button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE)
     {
+        if (WORLD.dragging_distance_traveled < 5)
+        {
+            WORLD.points.erase(WORLD.points.find(WORLD.dragging_point));
+        }
+
         WORLD.dragging_point = -1;
+        WORLD.dragging_distance_traveled = 0;
     }
 
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
@@ -70,19 +109,17 @@ static void mouse_button_callback(GLFWwindow* window, int button, int action, in
         double xpos, ypos;
         glfwGetCursorPos(window, &xpos, &ypos);
 
-        int i = 0;
-        for (auto& point: WORLD.points)
+        for (const auto& [id, point]: WORLD.points)
         {
             if (intersect_point(point, xpos, ypos))
             {
-                WORLD.dragging_point = i;
+                WORLD.dragging_point = id;
                 return;
             }
-            i++;
         }
 
         static const double RADIUS = 8;
-        WORLD.points.push_back(Point(xpos, ypos));
+        WORLD.points.try_emplace(rand() % INT_MAX, xpos, ypos);
     }
 }
 
@@ -90,12 +127,17 @@ static void cursor_position_callback(GLFWwindow* window, double xpos, double ypo
 {
     if (WORLD.dragging_point >= 0)
     {
-        printf("%d\n", WORLD.dragging_point);
-        WORLD.points[WORLD.dragging_point].x = xpos;
-        WORLD.points[WORLD.dragging_point].y = ypos;
+        Point &p = WORLD.points.at(WORLD.dragging_point);
+        {
+            double dx = xpos - p.x;
+            double dy = ypos - p.y;
+            WORLD.dragging_distance_traveled += sqrt(dx*dx + dy*dy);
+        }
+        p.x = xpos;
+        p.y = ypos;
     }
 
-    for (auto& point: WORLD.points)
+    for (auto& [id, point]: WORLD.points)
     {
         point.selected = intersect_point(point, xpos, ypos);
     }
@@ -103,6 +145,7 @@ static void cursor_position_callback(GLFWwindow* window, double xpos, double ypo
 
 int main(void)
 {
+    srand(69);
     GLFWwindow* window;
 
     if (!glfwInit())
@@ -122,6 +165,15 @@ int main(void)
 
     WORLD = World();
 
+    char delete_text_buf[50000];
+    string delete_text_text = "Click screen to create point / Points can be dragged / Click a point to delete it";
+    int delete_text_quads = stb_easy_font_print(
+            6, 4, 
+            delete_text_text.c_str(), NULL, 
+            delete_text_buf, sizeof(delete_text_buf)
+    );
+    float *delete_text = (float *)delete_text_buf;
+
     while (!glfwWindowShouldClose(window))
     {
         glClearColor(0.9f, 0.9f, 0.9f, 1.0f);
@@ -131,31 +183,44 @@ int main(void)
         glfwGetFramebufferSize(window, &width, &height);
         glViewport(0, 0, width, height);
 
-        for (auto& point: WORLD.points)
-        {
-            glColor3f(0.1f, 0.1f, 0.1f);
-            render::draw_circle(point.x, point.y, point.select_radius);
-            if (point.selected)
-            {
-                glColor3f(1, 1, 1);
-                render::draw_circle(point.x, point.y, point.select_radius*3/4);
-            }
-        }
+        glMatrixMode(GL_PROJECTION);
+        glLoadIdentity();
+        glOrtho(0, width, height, 0, -1, 1);
+        glMatrixMode(GL_MODELVIEW);
+        glLoadIdentity();
 
+        glColor3f(0, 0, 0);
         int n = WORLD.points.size()-1;
         for (double t = 0; t < 1.0; t += 0.01)
         {
             double bx = 0;
             double by = 0;
-            for (int i = 0; i <= n; i++)
+            int i = 0;
+            for (const auto& [id, point]: WORLD.points)
             {
-                auto& point = WORLD.points[i];
                 double v = binomial(n, i) * pow(1 - t, n - i) * pow(t, i);
                 bx += v * point.x;
                 by += v * point.y;
+
+                i += 1;
             }
-            render::draw_circle(bx, by, 2);
+            gl::draw_circle(bx, by, 2);
         }
+
+        for (const auto& [id, point]: WORLD.points)
+        {
+            glColor3f(0, 0, 0);
+            gl::draw_circle(point.x, point.y, point.select_radius);
+            if (point.selected)
+            {
+                glColor3f(1, 1, 1);
+                auto radius = point.select_radius*3/4;
+                gl::draw_circle(point.x, point.y, radius);
+            }
+        }
+
+        glColor3f(0, 0, 0);
+        gl::draw_quads(delete_text, delete_text_quads);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
